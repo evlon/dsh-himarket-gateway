@@ -1,0 +1,7 @@
+node_modules/
+lib/
+*.tsbuildinfo
+*.log
+*.tgz
+.env
+himarket-gateway.env

@@ -1,0 +1,22 @@
+{
+  "name": "dsh-himarket-gateway",
+  "version": "0.1.0",
+  "description": "HiMarket 包装层：面向企业同事的发布/权限/审计网关。代理管理员权限做变更，按开发者归属做隔离，并记录上传/下载/更新审计。零改动 HiMarket 本体。",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "bin": {
+    "dsh-himarket-gateway": "lib/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "start": "node lib/server.js",
+    "seed-catalog": "node scripts/seed-catalog.mjs",
+    "test": "tsc -p tsconfig.json && node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
