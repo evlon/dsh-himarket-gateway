@@ -2,6 +2,22 @@
 
 HiMarket 的**发布/权限/审计包装层**（独立服务，零改动 HiMarket 本体）。
 
+## 安装 / 运行
+
+```bash
+# 从 npm 安装（提供 bin: dsh-himarket-gateway）
+npm i -g dsh-himarket-gateway
+
+# 或从源码运行（本仓）
+pnpm install && pnpm build
+pnpm start            # = node lib/server.js，读取环境变量/.env 配置
+```
+
+生产部署建议用 pm2 托管（参考部署环境 `E:\ai-works\caddy\himarket-gateway.cjs` 包装器 +
+`himarket-gateway.env` 注入环境变量，管理员凭据只在服务端持有，不进仓库/前端）。
+
+配置项见下方「环境变量」表。运行前先 `pnpm seed-catalog` 为历史产品打来源标签。
+
 ## 为什么需要它
 
 HiMarket 本体的产品写操作（创建/更新/删除/发布）全部是 `@AdminAuth`——只有管理员能改，

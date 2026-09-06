@@ -5,8 +5,19 @@
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
+  "files": [
+    "lib",
+    "scripts",
+    "README.md"
+  ],
   "bin": {
     "dsh-himarket-gateway": "lib/server.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.5.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
