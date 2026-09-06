@@ -253,9 +253,10 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
       // 5) 下载代理（记录「谁下载了什么」）
       if (method === 'GET' && pathname.startsWith('/download/')) {
         const productId = decodeURIComponent(pathname.slice('/download/'.length))
+        // 先记录下载审计（含回源失败的尝试），再回源 HiMarket 技能 zip
+        audit.append({ actor, action: 'download', targetType: 'AGENT_SKILL', targetId: productId })
         const target = `http://127.0.0.1:3090/api/v1/skills/${encodeURIComponent(productId)}/download`
         const upstream = await fetch(target)
-        audit.append({ actor, action: 'download', targetType: 'AGENT_SKILL', targetId: productId })
         res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream' })
         if (upstream.body) {
           for await (const chunk of upstream.body) res.write(chunk)
