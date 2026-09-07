@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HiMarket 岗位发布台</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --panel2:#1e222c; --line:#2a2f3a; --text:#e6e8ec; --muted:#9aa3b2; --blue:#4c8dff; --green:#3fb27f; --amber:#d9a03f; --red:#e05a5a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:10; }
+  header h1 { font-size:16px; margin:0; }
+  header .who { margin-left:auto; color:var(--muted); font-size:13px; display:flex; align-items:center; gap:10px; }
+  .wrap { max-width:1080px; margin:0 auto; padding:20px; }
+  .tabs { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  .tab { padding:8px 16px; border:1px solid var(--line); border-radius:8px; cursor:pointer; background:var(--panel2); color:var(--muted); }
+  .tab.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .panel h2 { font-size:15px; margin:0 0 12px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  label { color:var(--muted); font-size:13px; min-width:72px; }
+  input[type=text], input[type=password], select { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:13px; flex:1; min-width:180px; }
+  input[type=file] { color:var(--muted); font-size:13px; }
+  button { padding:8px 16px; border-radius:8px; border:1px solid var(--line); background:var(--panel2); color:var(--text); cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--blue); }
+  button.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+  button.danger { color:var(--red); }
+  button[disabled] { opacity:.5; cursor:not-allowed; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; line-height:18px; border:1px solid var(--line); color:var(--muted); margin-left:6px; white-space:nowrap; }
+  .badge.official { color:var(--blue); border-color:var(--blue); }
+  .badge.community { color:var(--green); border-color:var(--green); }
+  .badge.fork { color:var(--amber); border-color:var(--amber); }
+  .badge.overridden { color:var(--red); border-color:var(--red); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  td.act { white-space:nowrap; }
+  .msg { padding:10px 14px; border-radius:8px; margin:10px 0; font-size:13px; }
+  .msg.ok { background:rgba(63,178,127,.12); color:var(--green); border:1px solid rgba(63,178,127,.35); }
+  .msg.err { background:rgba(224,90,90,.12); color:var(--red); border:1px solid rgba(224,90,90,.35); }
+  .login-card { max-width:380px; margin:80px auto; }
+  .muted { color:var(--muted); font-size:12px; }
+  code { background:var(--panel2); padding:1px 6px; border-radius:4px; font-size:12px; }
+  .login-card .row { flex-direction:column; align-items:stretch; }
+  .login-card input { width:100%; }
+  .hidden { display:none; }
+  .sub { margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎯 HiMarket 岗位发布台</h1>
+  <div class="who" id="whoBar"></div>
+</header>
+<div class="wrap">
+  <!-- 登录 -->
+  <div class="login-card panel" id="loginView">
+    <h2>登录</h2>
+    <p class="muted">使用 HiMarket 开发者账号（发布员工岗位）；企业管理员用 admin 账号（可看全量审计）。</p>
+    <div class="row"><label>账号</label><input id="liUser" type="text" placeholder="如 user / admin" autocomplete="username"></div>
+    <div class="row"><label>密码</label><input id="liPass" type="password" placeholder="密码" autocomplete="current-password"></div>
+    <div class="row"><button class="primary" id="btnLogin">登 录</button></div>
+    <div id="loginMsg"></div>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="mainView" class="hidden">
+    <div class="tabs">
+      <div class="tab on" data-tab="catalog">市场目录</div>
+      <div class="tab" data-tab="mine">我的岗位</div>
+      <div class="tab" data-tab="publish">发布岗位</div>
+      <div class="tab" data-tab="audit">审计</div>
+      <div class="tab" id="tabAdminAudit" data-tab="adminAudit">全量审计</div>
+    </div>
+
+    <!-- 市场目录 -->
+    <div class="panel" id="tab-catalog">
+      <h2>市场目录（企业发布 / 员工共建）</h2>
+      <div class="row">
+        <label>筛选</label>
+        <select id="catFilter">
+          <option value="">全部</option>
+          <option value="OFFICIAL">仅企业发布</option>
+          <option value="COMMUNITY">仅员工共建</option>
+        </select>
+        <button id="btnRefreshCatalog">刷新</button>
+      </div>
+      <table><thead><tr><th>名称</th><th>来源</th><th>状态</th><th>说明</th></tr></thead><tbody id="catBody"></tbody></table>
+    </div>
+
+    <!-- 我的岗位 -->
+    <div class="panel hidden" id="tab-mine">
+      <h2>我的岗位</h2>
+      <button id="btnRefreshMine">刷新</button>
+      <table><thead><tr><th>名称</th><th>来源</th><th>覆盖关系</th><th>更新时间</th><th></th></tr></thead><tbody id="mineBody"></tbody></table>
+    </div>
+
+    <!-- 发布岗位 -->
+    <div class="panel hidden" id="tab-publish">
+      <h2>发布 / 迭代岗位</h2>
+      <div class="row"><label>岗位名</label><input id="pubName" type="text" placeholder="如 my-job（小写字母/数字/连字符，同名即迭代自己的包）"></div>
+      <div class="row"><label>岗位包 zip</label><input id="pubZip" type="file" accept=".zip"></div>
+      <div class="row"><label>覆盖谁</label><select id="pubOverride"><option value="">不覆盖（发布独立岗位）</option></select></div>
+      <div class="row"><button class="primary" id="btnPublish">发 布</button></div>
+      <div class="muted">说明：发布走企业网关统一通道（自动登记归属与来源标签）；「覆盖谁」表示你的岗位是对某既有岗位的员工改进版（官方默认、员工改进可选）。zip 内需含 agent.cordis.yml + preset.yml + SKILL.md（平铺在根目录）。</div>
+      <div id="pubMsg"></div>
+    </div>
+
+    <!-- 我的审计 -->
+    <div class="panel hidden" id="tab-audit">
+      <h2>我的审计</h2>
+      <button id="btnRefreshAudit">刷新</button>
+      <table><thead><tr><th>时间</th><th>动作</th><th>产品</th><th>详情</th></tr></thead><tbody id="auditBody"></tbody></table>
+    </div>
+
+    <!-- 全量审计（admin） -->
+    <div class="panel hidden" id="tab-adminAudit">
+      <h2>全量审计（企业管理员）</h2>
+      <div class="row"><label>按人</label><input id="aaActor" type="text" placeholder="留空=全部"></div>
+      <button id="btnRefreshAdminAudit">刷新</button>
+      <table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>产品</th><th>详情</th></tr></thead><tbody id="adminAuditBody"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict'
+var SESSION = null
+var CATALOG = []
+
+function el(id) { return document.getElementById(id) }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c] }) }
+function badge(src, overrides, overriddenBy) {
+  var html = ''
+  if (src === 'OFFICIAL') html += '<span class="badge official">企业发布</span>'
+  else html += '<span class="badge community">员工共建</span>'
+  if (overrides) html += '<span class="badge fork">覆盖 ' + esc(overrides) + '</span>'
+  if (overriddenBy && overriddenBy.length) html += '<span class="badge overridden">' + overriddenBy.length + ' 个改进版</span>'
+  return html
+}
+function ts(v) { return v ? new Date(v).toLocaleString('zh-CN') : '' }
+function authHeaders() { return SESSION ? { 'authorization': 'Bearer ' + SESSION.sessionId } : {} }
+function showMsg(target, text, ok) { var m = el(target); if (!m) return; m.innerHTML = '<div class="msg ' + (ok ? 'ok' : 'err') + '">' + esc(text) + '</div>' }
+
+function api(path, opts) {
+  opts = opts || {}
+  opts.headers = Object.assign({}, authHeaders(), opts.headers || {})
+  return fetch(path, opts).then(function (r) { return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status } }) })
+}
+
+function showMain() {
+  persist()
+  el('loginView').classList.add('hidden')
+  el('mainView').classList.remove('hidden')
+  var roleText = SESSION.role === 'admin' ? '管理员' : '开发者'
+  el('whoBar').innerHTML = '<span>' + esc(SESSION.developerId) + '（' + roleText + '）</span><button id="btnLogout">退出</button>'
+  el('btnLogout').onclick = function () { SESSION = null; persist(); location.reload() }
+  el('tabAdminAudit').classList.toggle('hidden', SESSION.role !== 'admin')
+  if (SESSION.role !== 'admin') { el('tab-adminAudit').classList.add('hidden') }
+  // 默认 tab：目录
+  switchTab('catalog')
+  refreshCatalog()
+}
+
+function switchTab(name) {
+  Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) { t.classList.toggle('on', t.getAttribute('data-tab') === name) })
+  Array.prototype.forEach.call(document.querySelectorAll('.panel[id^=tab-]'), function (p) { p.classList.add('hidden') })
+  var target = el('tab-' + name)
+  if (target) target.classList.remove('hidden')
+}
+
+// ---- 登录 ----
+el('btnLogin').onclick = function () {
+  var username = el('liUser').value.trim()
+  var password = el('liPass').value
+  if (!username || !password) { showMsg('loginMsg', '请输入账号与密码', false); return }
+  el('btnLogin').disabled = true
+  api('/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: username, password: password }) })
+    .then(function (d) {
+      if (!d.ok) { showMsg('loginMsg', d.error || '登录失败', false); return }
+      SESSION = { sessionId: d.sessionId, developerId: d.developerId, role: d.role }
+      showMain()
+    })
+    .catch(function (e) { showMsg('loginMsg', String(e), false) })
+    .finally(function () { el('btnLogin').disabled = false })
+}
+
+// ---- 目录 ----
+function refreshCatalog() {
+  api('/api/catalog').then(function (d) {
+    if (!d.ok) { showMsg('catBody', d.error, false); return }
+    CATALOG = d.products || []
+    renderCatalog()
+    // 同步发布 tab 的覆盖候选
+    var sel = el('pubOverride')
+    var cur = sel.value
+    sel.innerHTML = '<option value="">不覆盖（发布独立岗位）</option>' + CATALOG.filter(function (p) { return p.name }).map(function (p) { return '<option value="' + esc(p.name) + '">' + esc(p.name) + '（' + (p.source === 'OFFICIAL' ? '企业发布' : '员工共建') + '）</option>' }).join('')
+    if (cur) sel.value = cur
+  })
+}
+function renderCatalog() {
+  var f = el('catFilter').value
+  var rows = CATALOG.filter(function (p) { return !f || p.source === f })
+  el('catBody').innerHTML = rows.length ? rows.map(function (p) {
+    return '<tr><td><code>' + esc(p.name) + '</code></td><td>' + badge(p.source, p.overrides, p.overriddenBy) + '</td><td>' + esc(p.status || '') + '</td><td class="muted">' + esc((p.description || '').slice(0, 80)) + '</td></tr>'
+  }).join('') : '<tr><td colspan="4" class="muted">暂无数据，先点「刷新」</td></tr>'
+}
+el('btnRefreshCatalog').onclick = refreshCatalog
+el('catFilter').onchange = renderCatalog
+
+// ---- 我的岗位 ----
+function refreshMine() {
+  api('/api/me/products').then(function (d) {
+    if (!d.ok) { showMsg('mineBody', d.error, false); return }
+    el('mineBody').innerHTML = (d.products || []).length ? d.products.map(function (p) {
+      return '<tr><td><code>' + esc(p.name) + '</code></td><td>' + badge(p.source, p.overrides, p.overriddenBy) + '</td><td class="muted">' + (p.overrides ? '改进版·覆盖 ' + esc(p.overrides) : (p.overriddenBy && p.overriddenBy.length ? p.overriddenBy.map(function (o) { return esc(o.name) }).join('、') : '独立')) + '</td><td class="muted">' + ts(p.updatedAt) + '</td><td class="act"><button data-del="' + esc(p.productId) + '">删除</button></td></tr>'
+    }).join('') : '<tr><td colspan="5" class="muted">你还没有发布过岗位</td></tr>'
+    Array.prototype.forEach.call(el('mineBody').querySelectorAll('button[data-del]'), function (b) {
+      b.onclick = function () {
+        if (!confirm('确定删除 ' + b.getAttribute('data-del') + '？')) return
+        api('/products/' + encodeURIComponent(b.getAttribute('data-del')), { method: 'DELETE' }).then(function (d) { alert(d.ok ? '已删除' : (d.error || '失败')); refreshMine() })
+      }
+    })
+  })
+}
+el('btnRefreshMine').onclick = refreshMine
+
+// ---- 发布 ----
+el('btnPublish').onclick = function () {
+  var name = el('pubName').value.trim()
+  var file = el('pubZip').files && el('pubZip').files[0]
+  var overrides = el('pubOverride').value
+  if (!name) { showMsg('pubMsg', '请填岗位名', false); return }
+  if (!file) { showMsg('pubMsg', '请选择 zip 岗位包', false); return }
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) { showMsg('pubMsg', '岗位名需小写字母/数字开头，仅含小写字母/数字/连字符', false); return }
+  el('btnPublish').disabled = true
+  showMsg('pubMsg', '上传中…', true)
+  var fd = new FormData()
+  fd.append('file', file)
+  fd.append('name', name)
+  // 先上传拿 zip 路径
+  api('/api/upload', { method: 'POST', body: fd }).then(function (up) {
+    if (!up.ok) throw new Error(up.error || '上传失败')
+    return api('/publish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name, zipPath: up.zipPath, overrides: overrides || undefined }) })
+  }).then(function (pub) {
+    if (!pub.ok) { showMsg('pubMsg', pub.error || '发布失败', false); return }
+    showMsg('pubMsg', '已发布/更新：' + name + '（产品 ' + pub.productId + '，v' + pub.version + '）', true)
+    el('pubZip').value = ''
+    refreshMine(); refreshCatalog()
+  }).catch(function (e) { showMsg('pubMsg', String(e), false) }).finally(function () { el('btnPublish').disabled = false })
+}
+
+// ---- 我的审计 ----
+function refreshAudit() {
+  api('/api/my-audit').then(function (d) {
+    if (!d.ok) { showMsg('auditBody', d.error, false); return }
+    el('auditBody').innerHTML = (d.rows || []).length ? d.rows.map(function (r) {
+      return '<tr><td class="muted">' + ts(r.at) + '</td><td>' + esc(r.action) + '</td><td><code>' + esc(r.productName || r.targetId) + '</code></td><td class="muted">' + esc(r.metaJson || '') + '</td></tr>'
+    }).join('') : '<tr><td colspan="4" class="muted">暂无记录</td></tr>'
+  })
+}
+el('btnRefreshAudit').onclick = refreshAudit
+
+// ---- 全量审计（admin）----
+function refreshAdminAudit() {
+  var actor = el('aaActor').value.trim()
+  api('/api/audit' + (actor ? '?actor=' + encodeURIComponent(actor) : '')).then(function (d) {
+    if (!d.ok) { showMsg('adminAuditBody', d.error, false); return }
+    el('adminAuditBody').innerHTML = (d.rows || []).length ? d.rows.map(function (r) {
+      return '<tr><td class="muted">' + ts(r.at) + '</td><td>' + esc(r.actor) + '</td><td>' + esc(r.action) + '</td><td><code>' + esc(r.productName || r.targetId) + '</code></td><td class="muted">' + esc(r.metaJson || '') + '</td></tr>'
+    }).join('') : '<tr><td colspan="5" class="muted">暂无记录</td></tr>'
+  })
+}
+el('btnRefreshAdminAudit').onclick = refreshAdminAudit
+
+// ---- tab 切换 ----
+Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
+  t.onclick = function () {
+    var name = t.getAttribute('data-tab')
+    switchTab(name)
+    if (name === 'catalog') refreshCatalog()
+    else if (name === 'mine') refreshMine()
+    else if (name === 'audit') refreshAudit()
+    else if (name === 'adminAudit') refreshAdminAudit()
+  }
+})
+
+// 恢复会话（localStorage 存 sessionId；失效时回登录）
+;(function boot() {
+  try {
+    var raw = localStorage.getItem('gw-session')
+    if (raw) SESSION = JSON.parse(raw)
+  } catch (e) {}
+  if (!SESSION) return
+  api('/api/me').then(function (d) {
+    if (d.ok) { showMain() } else { localStorage.removeItem('gw-session'); SESSION = null }
+  })
+})()
+function persist() {
+  try { if (SESSION) localStorage.setItem('gw-session', JSON.stringify(SESSION)); else localStorage.removeItem('gw-session') } catch (e) {}
+}
+</script>
+</body>
+</html>

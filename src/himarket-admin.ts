@@ -201,6 +201,27 @@ export class HimarketAdminClient {
     await this.adminRequest<unknown>(`/products/${encodeURIComponent(productId)}`, { method: 'DELETE' })
   }
 
+  /**
+   * 列出全部产品（翻页，最多 5 页 × 200）。
+   * @returns [{ productId, name, type, status }]
+   */
+  async listProducts(): Promise<Array<{ productId?: string; name?: string; type?: string; status?: string; description?: string }>> {
+    if (this.adminToken === '') await this.loginAdmin()
+    let page = 1
+    let all: Array<{ productId?: string; name?: string; type?: string; status?: string; description?: string }> = []
+    for (;;) {
+      const res = await this.adminRequest<{ content?: Array<{ productId?: string; name?: string; type?: string; status?: string; description?: string }> }>(
+        `/products?pageNum=${page}&pageSize=200&type=AGENT_SKILL`,
+      )
+      const content = res.content ?? []
+      all = all.concat(content)
+      if (content.length < 200) break
+      page += 1
+      if (page > 5) break
+    }
+    return all
+  }
+
   private async adminRequest<T>(path: string, opts: { method?: string; body?: string } = {}): Promise<T> {
     const doFetch = async (): Promise<Response> => {
       const res = await this.fetchFn(this.baseUrl + API_PREFIX + path, {

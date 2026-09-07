@@ -16,7 +16,10 @@
  */
 
 import { createServer } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { loadConfig, type GatewayConfig } from './config.js'
 import { HimarketAdminClient, AdminClientError } from './himarket-admin.js'
 import { OwnershipStore, resolveSource } from './ownership.js'
@@ -26,10 +29,25 @@ import { DeveloperAuth, DeveloperAuthError } from './auth.js'
 interface Session {
   developerId: string
   token: string
+  /** 'admin'（企业管理员）或 'developer'（普通开发者）。admin 可看全量审计。 */
+  role: 'admin' | 'developer'
 }
 
 const sessions = new Map<string, Session>()
 let seq = 0
+
+// Web UI 静态页（构建时拷到 lib/ui/index.html；启动读一次缓存在内存）。
+let uiHtml: string | null = null
+async function loadUiHtml(): Promise<string | null> {
+  if (uiHtml !== null) return uiHtml
+  try {
+    const uiPath = join(fileURLToPath(new URL('.', import.meta.url)), 'ui', 'index.html')
+    uiHtml = await readFile(uiPath, 'utf8')
+  } catch {
+    uiHtml = ''
+  }
+  return uiHtml
+}
 
 function isAllowed(ip: string, allowlist: string[]): boolean {
   const normalized = ip === '::1' ? '127.0.0.1' : ip.replace(/^::ffff:/, '')
@@ -56,6 +74,55 @@ function readBody(req: any): Promise<Record<string, unknown>> {
     })
     req.on('error', reject)
   })
+}
+
+/** 读整个请求体为 Buffer（multipart 上传用）。 */
+function readBodyBuffer(req: any): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+/** 极简 multipart/form-data 解析：取第一个 file 字段的字节；非 multipart 或解析失败返回 null。 */
+function parseMultipartFile(buf: Buffer, contentType: string): { filename: string; data: Buffer } | null {
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType)
+  const boundaryRaw = (m?.[1] ?? m?.[2] ?? '').trim()
+  if (boundaryRaw === '') return null
+  const boundary = Buffer.from('--' + boundaryRaw)
+  // 按 boundary 切块
+  const parts: Buffer[] = []
+  let start = buf.indexOf(boundary)
+  while (start !== -1) {
+    const next = buf.indexOf(boundary, start + boundary.length)
+    if (next === -1) break
+    parts.push(buf.subarray(start + boundary.length, next))
+    start = next
+  }
+  let filename = ''
+  let data: Buffer | null = null
+  for (const part of parts) {
+    // 跳过结尾 --\r\n 与开头的 \r\n
+    const head = part.subarray(0, Math.min(part.length, 1024))
+    const headStr = head.toString('latin1')
+    if (!/content-disposition/i.test(headStr)) continue
+    if (!/name="file"/i.test(headStr)) continue
+    const fn = /filename="([^"]*)"/i.exec(headStr)
+    if (fn) filename = fn[1] ?? ''
+    const sep = part.indexOf(Buffer.from('\r\n\r\n'))
+    if (sep === -1) continue
+    let body = part.subarray(sep + 4)
+    // 去尾部 \r\n（boundary 前）
+    if (body.length >= 2 && body[body.length - 2] === 13 && body[body.length - 1] === 10) {
+      body = body.subarray(0, body.length - 2)
+    }
+    data = body
+    break
+  }
+  if (data === null) return null
+  return { filename, data }
 }
 
 export interface ServerOverrides {
@@ -87,6 +154,17 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
     const method = req.method ?? 'GET'
 
     try {
+      // 0) Web UI 静态页
+      if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+        const html = await loadUiHtml()
+        if (html === null || html === '') {
+          return sendJson(res, 500, { ok: false, error: 'UI 资源未找到（build 时需拷贝 src/ui → lib/ui）' })
+        }
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' })
+        res.end(html)
+        return
+      }
+
       // 1) 登录
       //    支持两种身份：
       //     - 普通开发者：username/password 走 HiMarket /developers/login（员工共建）
@@ -98,12 +176,12 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
         const password = String(body.password ?? '')
         if (username === config.adminUsername && password === config.adminPassword) {
           const sessionId = `sess-${(seq += 1)}-${Date.now()}`
-          sessions.set(sessionId, { developerId: config.adminUsername, token: '' })
+          sessions.set(sessionId, { developerId: config.adminUsername, token: '', role: 'admin' })
           return sendJson(res, 200, { ok: true, sessionId, developerId: config.adminUsername, role: 'admin' })
         }
         const identity = await devAuth.login(username, password)
         const sessionId = `sess-${(seq += 1)}-${Date.now()}`
-        sessions.set(sessionId, { developerId: identity.username, token: identity.token })
+        sessions.set(sessionId, { developerId: identity.username, token: identity.token, role: 'developer' })
         return sendJson(res, 200, { ok: true, sessionId, developerId: identity.username, role: 'developer' })
       }
 
@@ -143,6 +221,74 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
         return sendJson(res, 401, { ok: false, error: '未登录或会话已失效' })
       }
       const actor = session.developerId
+      const role = session.role
+
+      // 1.5) Web UI 数据端点
+      // 我的身份 + role
+      if (method === 'GET' && pathname === '/api/me') {
+        return sendJson(res, 200, { ok: true, developerId: actor, role })
+      }
+
+      // 我的归属产品列表（含来源/覆盖信息）
+      if (method === 'GET' && pathname === '/api/me/products') {
+        const mine = ownership.listByDeveloper(actor)
+        const rows = mine.map((r) => {
+          const ovs = r.overrides === '' ? ownership.listOverrides(r.name).map((o) => ({ productId: o.productId, name: o.name, publisher: o.developerId })) : []
+          return {
+            productId: r.productId,
+            name: r.name,
+            source: r.source,
+            overrides: r.overrides,
+            overriddenBy: ovs,
+            createdAt: r.createdAt,
+            updatedAt: r.updatedAt,
+          }
+        })
+        return sendJson(res, 200, { ok: true, products: rows })
+      }
+
+      // 市场目录：HiMarket 全部产品 + 网关归属来源标注（登录后浏览、选覆盖目标用）
+      if (method === 'GET' && pathname === '/api/catalog') {
+        const products = await admin.listProducts()
+        const rows = products.map((p) => {
+          const pid = p.productId ?? ''
+          const own = pid !== '' ? ownership.getByProduct(pid) : undefined
+          const ovs = own !== undefined && own.overrides === '' ? ownership.listOverrides(own.name).map((o) => ({ productId: o.productId, name: o.name, publisher: o.developerId })) : []
+          return {
+            productId: pid,
+            name: p.name ?? '',
+            type: p.type ?? '',
+            status: p.status ?? '',
+            description: p.description ?? '',
+            source: own?.source ?? 'COMMUNITY',
+            publisher: own?.developerId ?? '',
+            overrides: own?.overrides ?? '',
+            overriddenBy: ovs,
+          }
+        })
+        return sendJson(res, 200, { ok: true, products: rows })
+      }
+
+      // 上传岗位 zip：multipart → 暂存临时目录 → 返回 zipPath 供 /publish
+      if (method === 'POST' && pathname === '/api/upload') {
+        const ctype = (req.headers['content-type'] ?? '') as string
+        if (!ctype.toLowerCase().includes('multipart/form-data')) {
+          return sendJson(res, 400, { ok: false, error: '需 multipart/form-data（file 字段 + name 字段）' })
+        }
+        const buf = await readBodyBuffer(req)
+        const parsed = parseMultipartFile(buf, ctype)
+        if (parsed === null) {
+          return sendJson(res, 400, { ok: false, error: '未找到 file 字段，或请求体不是合法 multipart' })
+        }
+        if (parsed.data.length === 0) {
+          return sendJson(res, 400, { ok: false, error: '上传内容为空' })
+        }
+        const dir = await mkdtemp(join(tmpdir(), 'hmgw-upload-'))
+        const safeName = parsed.filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(-80) || 'package.zip'
+        const zipPath = join(dir, safeName)
+        await writeFile(zipPath, parsed.data)
+        return sendJson(res, 200, { ok: true, zipPath, filename: safeName, bytes: parsed.data.length })
+      }
 
       // 2) 发布 / 迭代岗位
       //    同名覆盖语义：body.overrides = 被覆盖的官方产品名（可选）。
@@ -208,6 +354,12 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
           meta: { version: result.version, portalId: portalId ?? null },
         })
 
+        // 发布成功后清理本次上传的临时目录（仅清理网关自己 mkdtemp 的 hmgw-upload-*）
+        const uploadDir = dirname(zipPath)
+        if (/hmgw-upload-/.test(uploadDir)) {
+          void rm(uploadDir, { recursive: true, force: true }).catch(() => {})
+        }
+
         return sendJson(res, 200, {
           ok: true,
           productId: result.productId,
@@ -233,8 +385,11 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
         return sendJson(res, 200, { ok: true })
       }
 
-      // 4) 审计查询
-      if (method === 'GET' && pathname === '/audit') {
+      // 4) 审计查询：全量仅管理员可见；普通开发者只能看自己的
+      if (method === 'GET' && pathname === '/api/audit') {
+        if (role !== 'admin') {
+          return sendJson(res, 403, { ok: false, error: '仅企业管理员可查看全量审计' })
+        }
         const actorQ = url.searchParams.get('actor') ?? undefined
         const actionQ = url.searchParams.get('action') as AuditAction | null
         const fromQ = url.searchParams.get('from')
@@ -245,6 +400,16 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
           action: actionQ ?? undefined,
           from: fromQ ? Number(fromQ) : undefined,
           to: toQ ? Number(toQ) : undefined,
+          limit: limitQ ? Number(limitQ) : undefined,
+        })
+        return sendJson(res, 200, { ok: true, count: rows.length, rows })
+      }
+      if (method === 'GET' && pathname === '/api/my-audit') {
+        const actionQ = url.searchParams.get('action') as AuditAction | null
+        const limitQ = url.searchParams.get('limit')
+        const rows = audit.query({
+          actor,
+          action: actionQ ?? undefined,
           limit: limitQ ? Number(limitQ) : undefined,
         })
         return sendJson(res, 200, { ok: true, count: rows.length, rows })

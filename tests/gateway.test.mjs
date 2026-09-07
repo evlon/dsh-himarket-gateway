@@ -108,6 +108,8 @@ function makeConfig() {
   const cfg = loadConfig()
   cfg.port = 0
   cfg.allowlist = ['127.0.0.1']
+  cfg.adminUsername = 'admin'
+  cfg.adminPassword = 'x' // 测试统一 admin 凭据（本机无 .env 时 loadConfig 默认空）
   return cfg
 }
 
@@ -356,6 +358,88 @@ test('覆盖目标不存在时报 400', async () => {
     const pub = await req(base, 'POST', '/publish', { name: 'ghost-cover', zipPath: zipFile, overrides: 'no-such-product' }, sid)
     assert.equal(pub.status, 400, JSON.stringify(pub.data))
     assert.match(pub.data.error, /覆盖目标/)
+  } finally {
+    server.close()
+  }
+})
+
+test('GET / 返回 Web UI 页面', async () => {
+  const { handler } = makeMockFetch()
+  const ownership = new OwnershipStore(tmpDb)
+  const audit = new AuditStore(tmpDb)
+  const admin = new HimarketAdminClient({ baseUrl: 'http://mock', adminUsername: 'admin', adminPassword: 'x', fetchFn: handler })
+  const devAuth = new DeveloperAuth('http://mock', handler)
+  const { server, base } = await startGateway({ admin, ownership, audit, devAuth })
+  try {
+    const res = await fetch(`${base}/`)
+    assert.equal(res.status, 200)
+    const html = await res.text()
+    assert.match(html, /HiMarket 岗位发布台/)
+    assert.match(html, /api\/catalog/)
+  } finally {
+    server.close()
+  }
+})
+
+test('/api/me 返回身份；全量审计仅 admin 可见', async () => {
+  const { handler } = makeMockFetch(['secretary'])
+  const ownership = new OwnershipStore(tmpDb)
+  const audit = new AuditStore(tmpDb)
+  ownership.upsert({ productId: 'prod-secretary', name: 'secretary', developerId: 'admin', type: 'AGENT_SKILL', source: 'OFFICIAL' })
+  audit.append({ actor: 'admin', action: 'publish', targetType: 'AGENT_SKILL', targetId: 'prod-secretary', productName: 'secretary' })
+  audit.append({ actor: 'zhangsan', action: 'publish', targetType: 'AGENT_SKILL', targetId: 'prod-x', productName: 'x' })
+  const admin = new HimarketAdminClient({ baseUrl: 'http://mock', adminUsername: 'admin', adminPassword: 'x', fetchFn: handler })
+  const devAuth = new DeveloperAuth('http://mock', handler)
+  const { server, base } = await startGateway({ admin, ownership, audit, devAuth })
+  try {
+    // 开发者登录
+    const login = await req(base, 'POST', '/auth/login', { username: 'zhangsan', password: 'p' })
+    const sid = login.data.sessionId
+    assert.equal(login.data.role, 'developer')
+    // /api/me
+    const me = await req(base, 'GET', '/api/me', undefined, sid)
+    assert.equal(me.data.developerId, 'zhangsan')
+    assert.equal(me.data.role, 'developer')
+    // 开发者访问全量审计 → 403
+    const denied = await req(base, 'GET', '/api/audit', undefined, sid)
+    assert.equal(denied.status, 403)
+    // 开发者看自己的审计
+    const mine = await req(base, 'GET', '/api/my-audit', undefined, sid)
+    assert.equal(mine.data.ok, true)
+
+    // admin 登录
+    const alogin = await req(base, 'POST', '/auth/login', { username: 'admin', password: 'x' })
+    assert.equal(alogin.data.role, 'admin')
+    const asid = alogin.data.sessionId
+    const full = await req(base, 'GET', '/api/audit', undefined, asid)
+    assert.equal(full.data.ok, true)
+    // 共享 tmpDb 会累积前面测试的审计行；断言能看到 admin 与 zhangsan 的记录即可
+    const actors = full.data.rows.map((r) => r.actor)
+    assert.ok(actors.includes('admin'))
+    assert.ok(actors.includes('zhangsan'))
+  } finally {
+    server.close()
+  }
+})
+
+test('/api/catalog 返回带来源标注的产品列表', async () => {
+  const { handler } = makeMockFetch(['secretary', 'pm'])
+  const ownership = new OwnershipStore(tmpDb)
+  const audit = new AuditStore(tmpDb)
+  ownership.upsert({ productId: 'prod-secretary', name: 'secretary', developerId: 'admin', type: 'AGENT_SKILL', source: 'OFFICIAL' })
+  ownership.upsert({ productId: 'prod-pm', name: 'pm', developerId: 'admin', type: 'AGENT_SKILL', source: 'COMMUNITY' })
+  const admin = new HimarketAdminClient({ baseUrl: 'http://mock', adminUsername: 'admin', adminPassword: 'x', fetchFn: handler })
+  const devAuth = new DeveloperAuth('http://mock', handler)
+  const { server, base } = await startGateway({ admin, ownership, audit, devAuth })
+  try {
+    const login = await req(base, 'POST', '/auth/login', { username: 'zhangsan', password: 'p' })
+    const sid = login.data.sessionId
+    const cat = await req(base, 'GET', '/api/catalog', undefined, sid)
+    assert.equal(cat.data.ok, true)
+    const byName = Object.fromEntries(cat.data.products.map((p) => [p.name, p]))
+    assert.equal(byName['secretary']?.source, 'OFFICIAL')
+    assert.equal(byName['pm']?.source, 'COMMUNITY')
+    assert.equal(byName['pm']?.publisher, 'admin')
   } finally {
     server.close()
   }
