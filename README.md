@@ -49,13 +49,42 @@ DSH web(小白) ──开发者token──> dsh-himarket-gateway
 | --- | --- | --- |
 | `GATEWAY_PORT` | `3091` | 监听端口 |
 | `GATEWAY_ALLOWLIST` | `127.0.0.1,::1` | 允许访问的 IP（逗号分隔） |
-| `HIMARKET_BASE_URL` | `http://ai-market.ict.cmcc` | HiMarket 后端地址 |
+| `HIMARKET_BASE_URL` | 见下「域名配置」 | HiMarket 后端地址（整条 URL 覆盖，优先级最高） |
+| `HIMARKET_DEPLOY_ENV` | `new` | 部署环境档位：`legacy` = 旧环境 `*.ict.cmcc` |
+| `HIMARKET_DOMAIN_SUFFIX` | `ai.ict.cmcc` | 只换域名后缀（指向其他按新规律命名的环境） |
 | `HIMARKET_ADMIN_USERNAME` | `admin` | 管理员账号（**服务端持有，不下发前端**） |
 | `HIMARKET_ADMIN_PASSWORD` | 空 | 管理员密码（**服务端持有**） |
 | `GATEWAY_DB_PATH` | `~/.dsh-himarket-gateway/audit.db` | SQLite 存储路径（归属+审计同一库） |
 | `HIMARKET_CATEGORY` | `数字员工岗位` | 发布包默认分类名 |
 
 > 凭据只从服务端环境变量注入，绝不通过前端/API 暴露给开发者。
+
+### 域名配置（新旧环境并存）
+
+内网原有 `*.ict.cmcc`，新部署的 K8S 环境改用 `*.ai.ict.cmcc`。**两套环境并存**，
+故域名做成可配置：默认指向新环境，可随时切回旧环境或指向其他环境。
+
+| 环境 | `HIMARKET_BASE_URL` 默认值 |
+| --- | --- |
+| 新 K8S（默认） | `http://market.ai.ict.cmcc` |
+| 旧环境 | `http://ai-market.ict.cmcc` |
+
+```bash
+# 新环境：无需任何配置（默认）
+node lib/server.js
+
+# 切回旧环境（二选一）
+HIMARKET_DEPLOY_ENV=legacy node lib/server.js
+HIMARKET_BASE_URL=http://ai-market.ict.cmcc node lib/server.js
+
+# 指向其他环境（只换后缀）
+HIMARKET_DOMAIN_SUFFIX=ai.example.com node lib/server.js
+```
+
+> 域名对应关系：门户 `ai-market.ict.cmcc` → `market.ai.ict.cmcc`；
+> 岗位网关 `ai-job.ict.cmcc` → `gateway.ai.ict.cmcc`；
+> 花名册 `ai-roster.ict.cmcc` → `roster.ai.ict.cmcc`；
+> 配置中心 `ai-conf.ict.cmcc` → `conf.ai.ict.cmcc`。
 
 ## 接口
 
@@ -74,9 +103,10 @@ DSH web(小白) ──开发者token──> dsh-himarket-gateway
 ```bash
 pnpm install
 pnpm build
-GATEWAY_PORT=3091 HIMARKET_BASE_URL=http://ai-market.ict.cmcc \
+GATEWAY_PORT=3091 \
   HIMARKET_ADMIN_USERNAME=admin HIMARKET_ADMIN_PASSWORD=*** \
   node lib/server.js
+# 默认连新环境 http://market.ai.ict.cmcc；旧环境加 HIMARKET_DEPLOY_ENV=legacy
 ```
 
 ## 测试

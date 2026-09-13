@@ -31,10 +31,21 @@ interface Session {
   token: string
   /** 'admin'（企业管理员）或 'developer'（普通开发者）。admin 可看全量审计。 */
   role: 'admin' | 'developer'
+  /** 是否具备「企业发布」身份（Keycloak 角色或静态白名单命中）。 */
+  publisher: boolean
+  /** 从 OIDC token 解析出的 realm 角色（便于审计与排错）。 */
+  roles: string[]
 }
 
 const sessions = new Map<string, Session>()
 let seq = 0
+
+/** 判断角色列表中是否命中任一目标角色。 */
+function hasAnyRole(roles: string[], targets: string[]): boolean {
+  if (targets.length === 0) return false
+  for (const r of roles) if (targets.includes(r)) return true
+  return false
+}
 
 // Web UI 静态页（构建时拷到 lib/ui/index.html；启动读一次缓存在内存）。
 let uiHtml: string | null = null
@@ -49,9 +60,56 @@ async function loadUiHtml(): Promise<string | null> {
   return uiHtml
 }
 
+/**
+ * 判断来源 IP 是否在白名单内。
+ *
+ * 支持三种写法：
+ *   - 精确 IP：`127.0.0.1`
+ *   - CIDR 网段：`10.233.0.0/16`（IPv4）
+ *   - 通配全部：`*` 或 `0.0.0.0/0`
+ *
+ * 说明：容器/集群部署时来源 IP 通常是网关 Pod 的地址且会变化，
+ * 因此需要 CIDR 或通配能力，而不是只能列举固定 IP。
+ */
 function isAllowed(ip: string, allowlist: string[]): boolean {
   const normalized = ip === '::1' ? '127.0.0.1' : ip.replace(/^::ffff:/, '')
-  return allowlist.includes(normalized) || allowlist.includes(ip)
+  for (const rule of allowlist) {
+    if (rule === '*' || rule === '0.0.0.0/0' || rule === '::/0') return true
+    if (rule.includes('/')) {
+      if (ipInCidr(normalized, rule)) return true
+    } else if (rule === normalized || rule === ip) {
+      return true
+    }
+  }
+  return false
+}
+
+/** IPv4 CIDR 匹配（覆盖集群 Pod/Service 网段场景） */
+function ipInCidr(ip: string, cidr: string): boolean {
+  const slash = cidr.indexOf('/')
+  if (slash < 0) return false
+  const net = cidr.slice(0, slash)
+  const bits = Number(cidr.slice(slash + 1))
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false
+
+  const toInt = (s: string): number | null => {
+    const parts = s.split('.')
+    if (parts.length !== 4) return null
+    let n = 0
+    for (const p of parts) {
+      const v = Number(p)
+      if (!Number.isInteger(v) || v < 0 || v > 255) return null
+      n = (n << 8) | v
+    }
+    return n >>> 0
+  }
+
+  const a = toInt(ip)
+  const b = toInt(net)
+  if (a === null || b === null) return false
+  if (bits === 0) return true
+  const mask = (0xffffffff << (32 - bits)) >>> 0
+  return (a & mask) === (b & mask)
 }
 
 function sendJson(res: any, status: number, body: unknown): void {
@@ -166,23 +224,57 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
       }
 
       // 1) 登录
-      //    支持两种身份：
-      //     - 普通开发者：username/password 走 HiMarket /developers/login（员工共建）
-      //     - 企业管理员：username==adminUsername 且 password==配置的 adminPassword →
-      //       网关直接签发 admin session（不发开发者请求）；admin 在白名单 → 发布标 OFFICIAL
+      //    支持三种身份：
+      //     - 企业管理员（配置密码）：username==adminUsername 且 password==adminPassword →
+      //       网关直接签发 admin session（不发开发者请求）
+      //     - 开发者：username/password 走 HiMarket /developers/login
+      //       → 若其 OIDC token 带 Keycloak 管理员角色，同样获得 admin 权限
+      //     - 发布者：token 带 gateway-publisher / platform-admin 角色 → 企业发布身份
       if (method === 'POST' && pathname === '/auth/login') {
         const body = await readBody(req)
         const username = String(body.username ?? '')
         const password = String(body.password ?? '')
         if (username === config.adminUsername && password === config.adminPassword) {
           const sessionId = `sess-${(seq += 1)}-${Date.now()}`
-          sessions.set(sessionId, { developerId: config.adminUsername, token: '', role: 'admin' })
-          return sendJson(res, 200, { ok: true, sessionId, developerId: config.adminUsername, role: 'admin' })
+          sessions.set(sessionId, {
+            developerId: config.adminUsername,
+            token: '',
+            role: 'admin',
+            publisher: true,
+            roles: ['(local-admin)'],
+          })
+          return sendJson(res, 200, {
+            ok: true,
+            sessionId,
+            developerId: config.adminUsername,
+            role: 'admin',
+            publisher: true,
+            roles: ['(local-admin)'],
+          })
         }
         const identity = await devAuth.login(username, password)
+        // 角色判定优先走 IdP（Keycloak），静态白名单作为兜底
+        const byRole = hasAnyRole(identity.roles, config.adminRoles)
+        const byWhitelist = config.officialDeveloperIds.includes(identity.username)
+        const isAdmin = byRole || byWhitelist
+        const isPublisher =
+          isAdmin || hasAnyRole(identity.roles, config.publisherRoles)
         const sessionId = `sess-${(seq += 1)}-${Date.now()}`
-        sessions.set(sessionId, { developerId: identity.username, token: identity.token, role: 'developer' })
-        return sendJson(res, 200, { ok: true, sessionId, developerId: identity.username, role: 'developer' })
+        sessions.set(sessionId, {
+          developerId: identity.username,
+          token: identity.token,
+          role: isAdmin ? 'admin' : 'developer',
+          publisher: isPublisher,
+          roles: identity.roles,
+        })
+        return sendJson(res, 200, {
+          ok: true,
+          sessionId,
+          developerId: identity.username,
+          role: isAdmin ? 'admin' : 'developer',
+          publisher: isPublisher,
+          roles: identity.roles,
+        })
       }
 
       // 公开只读：批量来源标签（小白同步时查，不需登录）
@@ -224,9 +316,15 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
       const role = session.role
 
       // 1.5) Web UI 数据端点
-      // 我的身份 + role
+      // 我的身份 + role + 角色（供前端展示，便于确认权限来源）
       if (method === 'GET' && pathname === '/api/me') {
-        return sendJson(res, 200, { ok: true, developerId: actor, role })
+        return sendJson(res, 200, {
+          ok: true,
+          developerId: actor,
+          role,
+          publisher: session.publisher,
+          roles: session.roles,
+        })
       }
 
       // 我的归属产品列表（含来源/覆盖信息）
@@ -332,8 +430,10 @@ export function buildServer(config: GatewayConfig, overrides: ServerOverrides = 
           portalId,
         })
 
-        // 登记/更新归属（含来源：官方账号白名单 → 企业发布，否则员工共建）
-        const source = resolveSource(actor, config.officialDeveloperIds)
+        // 登记/更新归属（来源判定：Keycloak 角色 / 静态白名单 → 企业发布，否则员工共建）
+        const source = session.publisher
+          ? 'OFFICIAL'
+          : resolveSource(actor, config.officialDeveloperIds)
         ownership.upsert({
           productId: result.productId,
           name,

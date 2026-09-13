@@ -1,6 +1,6 @@
 {
   "name": "dsh-himarket-gateway",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "HiMarket 包装层：面向企业同事的发布/权限/审计网关。代理管理员权限做变更，按开发者归属做隔离，并记录上传/下载/更新审计。零改动 HiMarket 本体。",
   "license": "MIT",
   "type": "module",
